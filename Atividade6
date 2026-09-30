@@ -1,0 +1,351 @@
+include "C:/msys64/ucrt64/include/raylib.h"
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <stdbool.h>
+
+#define LARGURA        800
+#define ALTURA         600
+#define ARQUIVO_PLACAR "placar.txt"
+#define ARQUIVO_SAVE   "save.bin"
+#define TAM_NOME       16
+#define TAM_MENSAGEM   64
+#define QTD_INIMIGOS   3
+#define QTD_MOEDAS     5
+#define VIDA_INICIAL   3
+
+typedef enum { TIPO_JOGADOR, TIPO_INIMIGO, TIPO_MOEDA } TipoEntidade;
+
+typedef struct {
+    TipoEntidade tipo;
+    float x, y;
+    float vx, vy;
+    float raio;
+    Color cor;
+    union {
+        struct { int vida;  } jogador;
+        struct { int dano;  } inimigo;
+        struct { int valor; } moeda;
+    } dados;
+} Entidade;
+
+static Entidade **vetorEntidades = NULL;
+static int totalEntidades = 0;
+static int capacidade = 0;
+
+void adicionarEntidade(Entidade *e) {
+    if (totalEntidades == capacidade) {
+        int novaCapacidade = (capacidade == 0) ? 8 : capacidade * 2;
+        Entidade **novo = (Entidade **)realloc(vetorEntidades,
+                                               novaCapacidade * sizeof(Entidade *));
+        if (novo == NULL) {
+            free(e);
+            return;
+        }
+        vetorEntidades = novo;
+        capacidade = novaCapacidade;
+    }
+    vetorEntidades[totalEntidades++] = e;
+}
+
+void liberarTodasEntidades(void) {
+    for (int i = 0; i < totalEntidades; i++) {
+        free(vetorEntidades[i]);
+    }
+    free(vetorEntidades);
+    vetorEntidades = NULL;
+    totalEntidades = 0;
+    capacidade = 0;
+}
+
+Entidade *criarEntidade(TipoEntidade tipo, float x, float y) {
+    Entidade *e = (Entidade *)malloc(sizeof(Entidade));
+    if (e == NULL) return NULL;
+    memset(e, 0, sizeof(Entidade));
+
+    e->tipo = tipo;
+    e->x = x;
+    e->y = y;
+
+    switch (tipo) {
+        case TIPO_JOGADOR:
+            e->raio = 18;
+            e->cor = BLUE;
+            e->dados.jogador.vida = VIDA_INICIAL;
+            break;
+        case TIPO_INIMIGO:
+            e->raio = 16;
+            e->cor = RED;
+            e->vx = (float)GetRandomValue(-150, 150);
+            e->vy = (float)GetRandomValue(-150, 150);
+            if (e->vx > -40 && e->vx < 40) e->vx = 90;
+            if (e->vy > -40 && e->vy < 40) e->vy = -90;
+            e->dados.inimigo.dano = 1;
+            break;
+        case TIPO_MOEDA:
+            e->raio = 10;
+            e->cor = GOLD;
+            e->dados.moeda.valor = 10;
+            break;
+    }
+    return e;
+}
+
+void iniciarJogo(void) {
+    liberarTodasEntidades();
+
+    adicionarEntidade(criarEntidade(TIPO_JOGADOR, LARGURA / 2.0f, ALTURA / 2.0f));
+
+    for (int i = 0; i < QTD_INIMIGOS; i++) {
+        adicionarEntidade(criarEntidade(TIPO_INIMIGO,
+                                        (float)GetRandomValue(40, LARGURA - 40),
+                                        (float)GetRandomValue(40, 150)));
+    }
+    for (int i = 0; i < QTD_MOEDAS; i++) {
+        adicionarEntidade(criarEntidade(TIPO_MOEDA,
+                                        (float)GetRandomValue(40, LARGURA - 40),
+                                        (float)GetRandomValue(200, ALTURA - 40)));
+    }
+}
+
+bool salvarPlacarTexto(const char *nome, int pontuacao) {
+    FILE *arquivo = fopen(ARQUIVO_PLACAR, "a");
+    if (arquivo == NULL) return false;
+
+    fprintf(arquivo, "%s %d\n", nome, pontuacao);
+    fclose(arquivo);
+    return true;
+}
+
+int lerMelhorPontuacao(void) {
+    FILE *arquivo = fopen(ARQUIVO_PLACAR, "r");
+    if (arquivo == NULL) return 0;
+
+    char nomeLido[TAM_NOME];
+    int melhor = 0, valor = 0;
+    while (fscanf(arquivo, "%15s %d", nomeLido, &valor) == 2) {
+        if (valor > melhor) melhor = valor;
+    }
+    fclose(arquivo);
+    return melhor;
+}
+
+bool salvarJogoBinario(void) {
+    FILE *arquivo = fopen(ARQUIVO_SAVE, "wb");
+    if (arquivo == NULL) return false;
+
+    fwrite(&totalEntidades, sizeof(int), 1, arquivo);
+    for (int i = 0; i < totalEntidades; i++) {
+        fwrite(vetorEntidades[i], sizeof(Entidade), 1, arquivo);
+    }
+
+    fclose(arquivo);
+    return true;
+}
+
+bool carregarJogoBinario(void) {
+    FILE *arquivo = fopen(ARQUIVO_SAVE, "rb");
+    if (arquivo == NULL) return false;
+
+    int totalSalvo = 0;
+    if (fread(&totalSalvo, sizeof(int), 1, arquivo) != 1 || totalSalvo <= 0) {
+        fclose(arquivo);
+        return false;
+    }
+
+    liberarTodasEntidades();
+    for (int i = 0; i < totalSalvo; i++) {
+        Entidade *e = (Entidade *)malloc(sizeof(Entidade));
+        if (e == NULL) break;
+        if (fread(e, sizeof(Entidade), 1, arquivo) != 1) {
+            free(e);
+            break;
+        }
+        adicionarEntidade(e);
+    }
+
+    fclose(arquivo);
+
+    if (totalEntidades == 0) {
+        iniciarJogo();
+        return false;
+    }
+    return true;
+}
+
+void definirMensagem(char *mensagem, float *tempoMensagem, const char *texto) {
+    snprintf(mensagem, TAM_MENSAGEM, "%s", texto);
+    *tempoMensagem = 3.0f;   /* exibe por 3 segundos */
+}
+
+bool pedirNome(char *nomeJogador) {
+    int tamNome = 0;
+    nomeJogador[0] = '\0';
+
+    while (!WindowShouldClose()) {
+        int c = GetCharPressed();
+        while (c > 0) {
+            if (c > 32 && c <= 125 && tamNome < TAM_NOME - 1) {
+                nomeJogador[tamNome++] = (char)c;
+                nomeJogador[tamNome] = '\0';
+            }
+            c = GetCharPressed();
+        }
+        if (IsKeyPressed(KEY_BACKSPACE) && tamNome > 0) {
+            nomeJogador[--tamNome] = '\0';
+        }
+        if (IsKeyPressed(KEY_ENTER)) {
+            if (tamNome == 0) strcpy(nomeJogador, "Jogador");
+            return true;
+        }
+
+        BeginDrawing();
+        ClearBackground(RAYWHITE);
+        DrawText("Digite seu nome (max. 15 caracteres, sem espacos)", 130, 210, 22, DARKGRAY);
+        DrawRectangle(230, 260, 340, 50, LIGHTGRAY);
+        DrawRectangleLines(230, 260, 340, 50, DARKGRAY);
+        DrawText(nomeJogador, 240, 272, 28, BLUE);
+        DrawText("Tecle ENTER para comecar", 270, 330, 20, GRAY);
+        EndDrawing();
+    }
+    return false;
+}
+
+int main(void) {
+    InitWindow(LARGURA, ALTURA, "Atividade 6 - Arquivos texto e binario");
+    SetTargetFPS(60);
+    SetExitKey(KEY_NULL);
+
+    char nomeJogador[TAM_NOME];
+    if (!pedirNome(nomeJogador)) {
+        CloseWindow();
+        return 0;
+    }
+
+    iniciarJogo();
+    Entidade *jogador = vetorEntidades[0];
+
+    int pontuacao = 0;
+    int melhorPontuacao = lerMelhorPontuacao();
+    char mensagem[TAM_MENSAGEM] = "";
+    float tempoMensagem = 0.0f;
+    float invulneravel = 0.0f;
+
+    while (!WindowShouldClose()) {
+        float dt = GetFrameTime();
+
+        if (IsKeyPressed(KEY_F5)) {
+            if (salvarPlacarTexto(nomeJogador, pontuacao)) {
+                melhorPontuacao = lerMelhorPontuacao();
+                definirMensagem(mensagem, &tempoMensagem, "Pontuacao salva em placar.txt");
+            } else {
+                definirMensagem(mensagem, &tempoMensagem, "Erro ao abrir placar.txt");
+            }
+        }
+        if (IsKeyPressed(KEY_F6)) {
+            if (salvarJogoBinario())
+                definirMensagem(mensagem, &tempoMensagem, "Jogo salvo em save.bin");
+            else
+                definirMensagem(mensagem, &tempoMensagem, "Erro ao salvar o jogo");
+        }
+        if (IsKeyPressed(KEY_F9)) {
+            if (carregarJogoBinario()) {
+                jogador = vetorEntidades[0];   /* enderecos mudaram! */
+                definirMensagem(mensagem, &tempoMensagem, "Jogo carregado de save.bin");
+            } else {
+                jogador = vetorEntidades[0];
+                definirMensagem(mensagem, &tempoMensagem, "Nenhum save encontrado");
+            }
+        }
+
+        if (IsKeyPressed(KEY_DELETE)) {
+            if (remove(ARQUIVO_SAVE) == 0)
+                definirMensagem(mensagem, &tempoMensagem, "Save apagado com sucesso!");
+            else
+                definirMensagem(mensagem, &tempoMensagem, "Nenhum save encontrado");
+        }
+
+        float velocidade = 250.0f;
+        float dx = (float)((IsKeyDown(KEY_RIGHT) || IsKeyDown(KEY_D)) -
+                           (IsKeyDown(KEY_LEFT)  || IsKeyDown(KEY_A)));
+        float dy = (float)((IsKeyDown(KEY_DOWN)  || IsKeyDown(KEY_S)) -
+                           (IsKeyDown(KEY_UP)    || IsKeyDown(KEY_W)));
+        jogador->x += dx * velocidade * dt;
+        jogador->y += dy * velocidade * dt;
+        if (jogador->x < jogador->raio) jogador->x = jogador->raio;
+        if (jogador->x > LARGURA - jogador->raio) jogador->x = LARGURA - jogador->raio;
+        if (jogador->y < jogador->raio) jogador->y = jogador->raio;
+        if (jogador->y > ALTURA - jogador->raio) jogador->y = ALTURA - jogador->raio;
+
+        if (invulneravel > 0) invulneravel -= dt;
+
+        for (int i = 1; i < totalEntidades; i++) {
+            Entidade *e = vetorEntidades[i];
+
+            switch (e->tipo) {
+                case TIPO_INIMIGO:
+                    e->x += e->vx * dt;
+                    e->y += e->vy * dt;
+                    if (e->x < e->raio || e->x > LARGURA - e->raio) e->vx = -e->vx;
+                    if (e->y < e->raio || e->y > ALTURA - e->raio)  e->vy = -e->vy;
+
+                    if (invulneravel <= 0 &&
+                        CheckCollisionCircles((Vector2){jogador->x, jogador->y}, jogador->raio,
+                                              (Vector2){e->x, e->y}, e->raio)) {
+                        jogador->dados.jogador.vida -= e->dados.inimigo.dano;
+                        invulneravel = 1.0f;
+                        if (jogador->dados.jogador.vida <= 0) {
+                            iniciarJogo();
+                            jogador = vetorEntidades[0];
+                            pontuacao = 0;
+                            definirMensagem(mensagem, &tempoMensagem, "Fim de jogo! Recomecando...");
+                        }
+                    }
+                    break;
+
+                case TIPO_MOEDA:
+                    if (CheckCollisionCircles((Vector2){jogador->x, jogador->y}, jogador->raio,
+                                              (Vector2){e->x, e->y}, e->raio)) {
+                        pontuacao += e->dados.moeda.valor;
+                        e->x = (float)GetRandomValue(40, LARGURA - 40);
+                        e->y = (float)GetRandomValue(200, ALTURA - 40);
+                    }
+                    break;
+
+                default:
+                    break;
+            }
+            if (totalEntidades == 0 || vetorEntidades[0] != jogador) break;   /* jogo reiniciado */
+        }
+
+        if (tempoMensagem > 0) tempoMensagem -= dt;
+
+        BeginDrawing();
+        ClearBackground(RAYWHITE);
+
+        for (int i = 0; i < totalEntidades; i++) {
+            Entidade *e = vetorEntidades[i];
+            Color cor = e->cor;
+            if (e->tipo == TIPO_JOGADOR && invulneravel > 0 && ((int)(invulneravel * 10) % 2))
+                cor = SKYBLUE;   /* pisca ao levar dano */
+            DrawCircle((int)e->x, (int)e->y, e->raio, cor);
+        }
+
+        DrawText(TextFormat("Jogador: %s", nomeJogador), 10, 10, 20, DARKGRAY);
+        DrawText(TextFormat("Pontos: %d   Recorde: %d", pontuacao, melhorPontuacao), 10, 34, 20, DARKGRAY);
+        DrawText(TextFormat("Vida: %d", jogador->dados.jogador.vida), 10, 58, 20, MAROON);
+        DrawText("F5: salvar placar | F6: salvar jogo | F9: carregar | DEL: apagar save",
+                 10, ALTURA - 26, 18, GRAY);
+
+        if (tempoMensagem > 0) {
+            int larg = MeasureText(mensagem, 24);
+            DrawRectangle((LARGURA - larg) / 2 - 12, 90, larg + 24, 40, Fade(BLACK, 0.75f));
+            DrawText(mensagem, (LARGURA - larg) / 2, 98, 24, WHITE);
+        }
+        EndDrawing();
+    }
+
+    liberarTodasEntidades();
+    CloseWindow();
+    return 0;
+}
